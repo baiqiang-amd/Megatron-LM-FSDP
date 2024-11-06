@@ -31,7 +31,9 @@ from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import checkpoint_exists
 from megatron.legacy.model import Float16Module
 from megatron.core.distributed import DistributedDataParallelConfig
+from megatron.core.distributed import FullyShardedDataParallelConfig 												
 from megatron.core.distributed import DistributedDataParallel as DDP
+from megatron.core.distributed import FullyShardedDataParallel as FSDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
@@ -532,6 +534,10 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 else:
                     fp8_meta.amax_history[0][fp8_meta_index] = 0
 
+    if args.fsdp:
+        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>> WARNING: Forcing FSDP!")
+        wrap_with_ddp = False
+
     if wrap_with_ddp:
         config = get_model_config(model[0])
 
@@ -546,18 +552,59 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
         ddp_config = DistributedDataParallelConfig(**kwargs)
 
         overlap_param_gather_with_optimizer_step = getattr(args, 'overlap_param_gather_with_optimizer_step', False)
+
         model = [DDP(config,
-                     ddp_config,
-                     model_chunk,
-                     # Turn off bucketing for model_chunk 2 onwards, since communication for these
-                     # model chunks is overlapped with compute anyway.
-                     disable_bucketing=(model_chunk_idx > 0) or overlap_param_gather_with_optimizer_step)
-                 for (model_chunk_idx, model_chunk) in enumerate(model)]
+                    ddp_config,
+                    model_chunk,
+                    # Turn off bucketing for model_chunk 2 onwards, since communication for these
+                    # model chunks is overlapped with compute anyway.
+                    disable_bucketing=(model_chunk_idx > 0) or overlap_param_gather_with_optimizer_step)
+                for (model_chunk_idx, model_chunk) in enumerate(model)]
 
         # Broadcast params from data parallel src rank to other data parallel ranks.
         if args.data_parallel_random_init:
             for model_module in model:
                 model_module.broadcast_params()
+
+#### START FSDP 
+                        # data_parallel_group=mpu.get_data_parallel_group(),
+        
+    else:
+        config = get_model_config(model[0])
+        
+        kwargs = {}
+        for f in dataclasses.fields(FullyShardedDataParallelConfig):
+            if hasattr(args, f.name):
+                kwargs[f.name] = getattr(args, f.name)
+        # kwargs['grad_reduce_in_fp32'] = args.accumulate_allreduce_grads_in_fp32
+        # kwargs['check_for_nan_in_grad'] = args.check_for_nan_in_loss_and_grad
+        # kwargs['bucket_size'] = args.ddp_bucket_size
+        # kwargs['average_in_collective'] = args.ddp_average_in_collective
+    # FSDP wrapping
+        fsdp_config = FullyShardedDataParallelConfig(
+            # sharding_strategy=args.fsdp_sharding_strategy,
+            # mixed_precision=args.fsdp_mixed_precision,
+            # cpu_offload=args.fsdp_cpu_offload,
+            # backward_prefetch=args.fsdp_backward_prefetch,
+            # limit_all_gathers=args.fsdp_limit_all_gathers,
+        )
+        model = [FSDP(config, model_module, fsdp_config)
+                    for model_module in model]
+
+        # Broadcast params from data parallel src rank to other data parallel ranks.
+        if args.data_parallel_random_init:
+            for model_module in model:
+                model_module.broadcast_params()
+    print(model)
+    # elif args.fsdp:
+    #         model = [FSDP(model_module,
+    #                     args,
+    #                     accumulate_allreduce_grads_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+    #                     overlap_grad_reduce=args.overlap_grad_reduce,
+    #                     use_distributed_optimizer=args.use_distributed_optimizer)
+    #                 for model_module in model]
+
+#### END FSDP
 
     return model
 
@@ -722,8 +769,9 @@ def train_step(forward_step_func, data_iterator,
     timers = get_timers()
 
     # Set grad to zero.
-    for model_chunk in model:
-        model_chunk.zero_grad_buffer()
+    if not args.fsdp:
+        for model_chunk in model:
+            model_chunk.zero_grad_buffer()
     optimizer.zero_grad()
 
     # Forward pass.

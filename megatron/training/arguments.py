@@ -695,8 +695,6 @@ def core_transformer_config_from_args(args, config_class=None):
     else:
         kw_args['num_query_groups'] = None
     kw_args['config_logger_dir'] = args.config_logger_dir
-    if args.disable_te_fused_rope:
-        kw_args['disable_te_fused_rope'] = args.disable_te_fused_rope
 
     # Return config.
     return config_class(**kw_args)
@@ -855,8 +853,6 @@ def _add_network_size_args(parser):
                        action='store_false',
                        help='Disable position embedding. Deprecated: use --position-embedding-type',
                        dest='add_position_embedding')
-    group.add_argument('--disable-te-fused-rope', action='store_true', default = False,
-                       help='Disable fused rope from transformer-engine: use --disable_te_fused_rope')
     group.add_argument('--make-vocab-size-divisible-by', type=int, default=128,
                        help='Pad the vocab size to be divisible by this value.'
                        'This is added for computational efficieny reasons.')
@@ -1164,9 +1160,6 @@ def _add_training_args(parser):
     group.add_argument('--disable-tp-comm-bulk-wgrad', action='store_false',
                        help='Disables the Reduce-Scatter overlap with bprop weight gradient GEMM.',
                        dest='tp_comm_bulk_wgrad')
-    group.add_argument('--tp-comm-bootstrap-backend', default='nccl', type=str,
-                       choices=['nccl', 'mpi', 'gloo'],
-                       help='Set the bootstrapping backend of Tensor parallel communications.')
     group.add_argument('--use-cpu-initialization', action='store_true',
                        default=None,
                        help='If set, initialize weights on the CPU. This eliminates init differences based on tensor parallelism.')
@@ -1518,6 +1511,14 @@ def _add_mixed_precision_args(parser):
 def _add_distributed_args(parser):
     group = parser.add_argument_group(title='distributed')
 
+    group.add_argument('--fsdp', action='store_true', help="use pytorch fsdp")
+    # group.add_argument('--fsdp-backward-prefetch', action='store_true', help="use pytorch fsdp")
+    # group.add_argument('--fsdp-cpu-offload', action='store_true', help="use fsdp cpu offload")
+    # group.add_argument('--fsdp-limit-all-gathers', action='store_true', help="use pytorch fsdp")
+    # group.add_argument('--fsdp-sharding-strategy', choices=['FullySharded','])
+    # group.add_argument('--fsdp-mixed-precision', action='store_true', help="use pytorch fsdp")
+
+
     group.add_argument('--tensor-model-parallel-size', type=int, default=1,
                        help='Degree of tensor model parallelism.')
     group.add_argument('--encoder-tensor-model-parallel-size', type=int, default=0,
@@ -1632,7 +1633,7 @@ def _add_validation_args(parser):
 
 def _add_data_args(parser):
     group = parser.add_argument_group(title='data and dataloader')
-
+    
     group.add_argument('--data-path', nargs='*', default=None,
                        help='The weight and prefix list for a set of train, validation, and test'
                        'datasets which split according to --split. The accepted formats are: '
